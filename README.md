@@ -4,57 +4,101 @@
 
 # vivintpy
 
-Python library for interacting with a Vivint security and smart home system.
+[![PyPI version](https://img.shields.io/pypi/v/vivintpy?style=for-the-badge)](https://pypi.org/project/vivintpy)
+[![Downloads](https://img.shields.io/pypi/dm/vivintpy?style=for-the-badge)](https://pypi.org/project/vivintpy)
 
-This was built to support the [`Vivint`](https://github.com/natekspencer/hacs-vivint) integration in [Home-Assistant](https://www.home-assistant.io/) but _should_ work outside of it too. Currently, it can be utilized via [HACS](https://hacs.xyz/) by adding the [hacs-vivint](https://github.com/natekspencer/hacs-vivint) custom repository.
+## Overview
 
-## Credit
+**vivintpy** is an unofficial, reverse-engineered Python client for the Vivint Smart Home API. It enables programmatic access to Vivint security systems, devices, and real-time events, and is suitable for automation, research, and integration with platforms like Home Assistant.
 
-This was inspired by the great work done by [Mike Reibard](https://github.com/Riebart/vivint.py) to reverse engineer the Vivint Sky API and [Ovidiu Stateina](https://github.com/ovirs/pyvivint) for the repository from which this is forked and expanded on.
-
-## Features
-
-It currently has support for the following device types:
-
-- alarm panels
-- cameras
-- door locks
-- garage doors
-- switches
-  - binary
-  - multilevel
-- thermostats
-- wireless sensors
-  - carbon monoxide
-  - door/window
-  - flood
-  - glass break
-  - motion
-  - smoke/fire
-  - etc
-
-In addition, it integrates with PubNub to receive real-time updates for devices. This subscription stops receiving notifications around 15-20 minutes unless a call is made to the Vivint Sky API periodically. This **might** be related to the cookie expiration since it expires 20 minutes after the last API call was received. If another client connects, however, the notifications start to stream again for all currently connected clients.
-
-## Usage
-
-See demo.py for a demonstration on how to use this library.
-
-## TODO:
-
-- write a better readme
-- write some documentation
-- add advanced support for:
-  - thermostats
-- add tests
+- **Async-first**: Modern asyncio-based design for efficient I/O.
+- **Device support**: Alarm panels, cameras, locks, garage doors, switches, thermostats, and sensors.
+- **Real-time**: PubNub event subscription for instant device updates.
+- **Extensible**: Typed device classes, event emitter pattern, and modular architecture.
 
 ---
 
-## Support Me
+## Architecture
 
-I'm not employed by Vivint, and provide this python package as-is.
+```
+Account (high-level API)
+  └─ VivintSkyApi (HTTP/gRPC, Auth, MFA)
+      └─ System(s) → AlarmPanel(s) → Device(s)
+          └─ PubNub Listener (real-time events)
+```
 
-If you don't already own a Vivint system, please consider using [my referal code (kaf164)](https://www.vivint.com/get?refCode=kaf164&exid=165211vivint.com/get?refCode=kaf164&exid=165211) to get $50 off your bill (as well as a tip to me in appreciation)!
+- `account.py`: User/session management, system/device discovery, PubNub connection.
+- `api.py`: Handles authentication, REST/gRPC calls, token refresh, error handling.
+- `devices/`: Device type wrappers (Camera, Lock, Switch, etc.)
+- `pubnub.py`: Real-time event subscription and dispatch.
 
-If you already own a Vivint system and still want to donate, consider buying me a coffee ☕ (or beer 🍺) instead by using the link below:
+See `demo.py` for a working example.
 
-<a href='https://ko-fi.com/natekspencer' target='_blank'><img height='35' style='border:0px;height:46px;' src='https://az743702.vo.msecnd.net/cdn/kofi3.png?v=0' border='0' alt='Buy Me a Coffee at ko-fi.com' />
+---
+
+## Supported Features
+
+| Feature                    | Supported |
+|----------------------------|-----------|
+| OAuth2/PKCE login + MFA    | ✅        |
+| Device discovery           | ✅        |
+| Alarm/lock/garage/camera   | ✅        |
+| Real-time updates (PubNub) | ✅        |
+| Device commands            | ✅        |
+| Panel firmware update      | ✅        |
+| Async API                  | ✅        |
+| Unit tests                 | 🚧        |
+
+---
+
+## Quickstart
+
+1. **Install dependencies:**
+   ```sh
+   pip install vivintpy
+   ```
+2. **Set environment variables:**
+   ```sh
+   export username='your@email.com'
+   export password='yourpassword'
+   ```
+3. **Run the demo:**
+   ```sh
+   python demo.py
+   ```
+
+The demo will:
+- Log in (with MFA if required)
+- Discover all systems/devices
+- Register real-time event handlers
+- Print/log device events
+
+---
+
+## Contributing
+
+- PRs and issues welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+- Please add tests for new device types or API calls.
+- For larger changes, open a discussion first.
+
+---
+
+## Fork & Credits
+
+- **Original Author:** Nathan Spencer (2021–2023)
+- **Forked from:** [ovirs/pyvivint](https://github.com/ovirs/pyvivint) and inspired by [Riebart/vivint.py](https://github.com/Riebart/vivint.py)
+- **Current Maintainer:** [Your Name], 2025–present
+
+This fork is maintained independently and may diverge from upstream.
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+You are free to use, modify, and distribute this software, provided you retain the original copyright notice.
+
+---
+
+*vivintpy is not affiliated with or endorsed by Vivint Smart Home, Inc. Use at your own risk.*
