@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 import ssl
 import urllib.parse
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from .exceptions import (
     VivintSkyApiError,
     VivintSkyApiMfaRequiredError,
 )
+from .models import AuthUserData, SystemData, PanelCredentialsData, PanelUpdateData
 from .proto import beam_pb2, beam_pb2_grpc
 from .utils import generate_code_challenge, generate_state
 
@@ -79,13 +81,21 @@ class VivintSkyApi:
             return False
         return True
 
-    async def connect(self) -> dict:
+    async def connect(self) -> AuthUserData:
         """Connect to VivintSky Cloud Service."""
         if not (self.__has_custom_client_session and self.is_session_valid()):
-            assert self.__password
-            await self.__get_vivintsky_session(self.__username, self.__password)
+            # Attempt to use refresh_token first
+            if self.__refresh_token:
+                await self.refresh_token(self.__refresh_token)
+            elif self.__password:
+                await self.__get_vivintsky_session(self.__username, self.__password)
+            else:
+                # no credentials provided
+                raise VivintSkyApiAuthenticationError(
+                    "No password or refresh token provided"
+                )
         authuser_data = await self.get_authuser_data()
-        if not authuser_data:
+        if not authuser_data.users:
             raise VivintSkyApiAuthenticationError("Unable to login to Vivint")
         return authuser_data
 
@@ -130,7 +140,7 @@ class VivintSkyApi:
         assert resp
         self.__token = resp
 
-    async def get_authuser_data(self) -> dict:
+    async def get_authuser_data(self) -> AuthUserData:
         """
         Get the authuser data.
 
@@ -140,18 +150,18 @@ class VivintSkyApi:
         resp = await self.__get("authuser")
         if not resp:
             raise VivintSkyApiAuthenticationError("Missing auth user data")
-        return resp
+        return AuthUserData.model_validate(resp)
 
-    async def get_panel_credentials(self, panel_id: int) -> dict:
+    async def get_panel_credentials(self, panel_id: int) -> PanelCredentialsData:
         """Get the panel credentials."""
         resp = await self.__get(f"panel-login/{panel_id}")
         if not resp:
             raise VivintSkyApiAuthenticationError(
                 "Unable to retrieve panel credentials."
             )
-        return resp
+        return PanelCredentialsData.model_validate(resp)
 
-    async def get_system_data(self, panel_id: int) -> dict:
+    async def get_system_data(self, panel_id: int) -> SystemData:
         """Get the raw data for a system."""
         resp = await self.__get(
             f"systems/{panel_id}",
@@ -160,9 +170,9 @@ class VivintSkyApi:
         )
         if not resp:
             raise VivintSkyApiError("Unable to retrieve system data")
-        return resp
+        return SystemData.model_validate(resp)
 
-    async def get_system_update(self, panel_id: int) -> dict:
+    async def get_system_update(self, panel_id: int) -> PanelUpdateData:
         """Get panel software update details."""
         resp = await self.__get(
             f"systems/{panel_id}/system-update",
@@ -170,7 +180,7 @@ class VivintSkyApi:
         )
         if not resp:
             raise VivintSkyApiError("Unable to retrieve system update")
-        return resp
+        return PanelUpdateData.model_validate(resp)
 
     async def update_panel_software(self, panel_id: int) -> None:
         """Request a panel software update."""
@@ -199,7 +209,7 @@ class VivintSkyApi:
         if not await self.__post(f"systems/{panel_id}/reboot-panel"):
             raise VivintSkyApiError("Unable to reboot panel")
 
-    async def get_device_data(self, panel_id: int, device_id: int) -> dict:
+    async def get_device_data(self, panel_id: int, device_id: int) -> SystemData:
         """Get the raw data for a device."""
         resp = await self.__get(
             f"system/{panel_id}/device/{device_id}",
@@ -207,7 +217,7 @@ class VivintSkyApi:
         )
         if not resp:
             raise VivintSkyApiError("Unable to retrieve device data")
-        return resp
+        return SystemData.model_validate(resp)
 
     async def set_alarm_state(
         self, panel_id: int, partition_id: int, state: int
@@ -664,7 +674,17 @@ class VivintSkyApi:
         assert self.__token
         creds = grpc.ssl_channel_credentials()
 
-        async with grpc.aio.secure_channel(GRPC_ENDPOINT, credentials=creds) as channel:
+        # grpc.aio.secure_channel normally returns a Channel object that supports
+        # use as an async context manager. In our tests this function may be
+        # patched with an AsyncMock, in which case calling it returns a
+        # coroutine that must be awaited to obtain the channel/context
+        # manager.  Support both behaviours so that the implementation works
+        # seamlessly in production and under mocked testing.
+        channel_cm = grpc.aio.secure_channel(GRPC_ENDPOINT, credentials=creds)
+        if asyncio.iscoroutine(channel_cm):
+            channel_cm = await channel_cm  # type: ignore[assignment]
+
+        async with channel_cm as channel:  # type: ignore[async-with-assign]
             stub: beam_pb2_grpc.BeamStub = beam_pb2_grpc.BeamStub(channel)  # type: ignore
             response = await callback(stub, [("token", self.__token["access_token"])])
             _LOGGER.debug("Response received: %s", str(response))

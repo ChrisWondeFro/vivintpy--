@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectionError
-from pubnub.pnconfiguration import PNConfiguration
-from pubnub.pubnub_asyncio import PubNubAsyncio
-
 from .api import VivintSkyApi
 from .const import (
     AuthUserAttribute,
@@ -18,7 +16,8 @@ from .const import (
     UserAttribute,
 )
 from .exceptions import VivintSkyApiError
-from .pubnub import PN_CHANNEL, PN_SUBSCRIBE_KEY, VivintPubNubSubscribeListener
+from .stream import EventStream, get_default_stream
+from .models import AuthUserData
 from .system import System
 from .utils import first_or_none
 
@@ -34,12 +33,11 @@ class Account:
         password: str | None = None,
         refresh_token: str | None = None,
         client_session: aiohttp.ClientSession | None = None,
+        stream: EventStream | None = None,
     ):
         """Initialize an account."""
         self.__connected = False
         self.__load_devices = False
-        self.__pubnub: PubNubAsyncio | None = None
-        self.__pubnub_listener: VivintPubNubSubscribeListener | None = None
         self._api = VivintSkyApi(
             username=username,
             password=password,
@@ -47,6 +45,7 @@ class Account:
             client_session=client_session,
         )
         self.systems: list[System] = []
+        self._stream: EventStream = stream if stream is not None else get_default_stream(self._api)
 
     @property
     def api(self) -> VivintSkyApi:
@@ -65,7 +64,7 @@ class Account:
 
     async def connect(
         self, load_devices: bool = False, subscribe_for_realtime_updates: bool = False
-    ) -> None:
+    ) -> AuthUserData:
         """Connect to the VivintSky API."""
         _LOGGER.debug("Connecting to VivintSky")
 
@@ -77,41 +76,22 @@ class Account:
 
         # subscribe to pubnub for realtime updates
         if subscribe_for_realtime_updates:
-            _LOGGER.debug("Subscribing to PubNub for realtime updates")
+            _LOGGER.debug("Subscribing for realtime updates")
             await self.subscribe_for_realtime_updates(authuser_data)
 
         # load all systems, panels and devices
         if self.__load_devices:
             _LOGGER.debug("Loading devices")
             await self.refresh(authuser_data)
+        return authuser_data
 
     async def disconnect(self) -> None:
         """Disconnect from the API."""
         _LOGGER.debug("Disconnecting from VivintSky")
         if self.connected:
-            if self.__pubnub:
-                self.__pubnub.remove_listener(self.__pubnub_listener)
-                await self.__pubnub_unsubscribe_all()
-                await self.__pubnub.stop()
+            await self._stream.disconnect()
         await self.api.disconnect()
         self.__connected = False
-
-    async def __pubnub_unsubscribe_all(self) -> None:
-        """
-        Unsubscribe from all channels and wait for the response.
-
-        The pubnub code doesn't properly wait for the unsubscribe event to finish or to
-        be canceled, so we have to manually do it by finding the coroutine in asyncio.
-        """
-        assert self.__pubnub
-        self.__pubnub.unsubscribe_all()
-        tasks = [
-            task
-            for task in asyncio.all_tasks()
-            if getattr(getattr(task.get_coro(), "cr_code", None), "co_name", None)
-            == "_send_leave_helper"
-        ]
-        await asyncio.gather(*tasks)
 
     async def verify_mfa(self, code: str) -> None:
         """Verify multi-factor authentication with the VivintSky API."""
@@ -122,70 +102,59 @@ class Account:
             _LOGGER.debug("Loading devices")
             await self.refresh()
 
-    async def refresh(self, authuser_data: dict | None = None) -> None:
+    async def refresh(self, authuser_data: AuthUserData | dict | None = None) -> None:
         """Refresh the account."""
-        # make a call to vivint's authuser endpoint to get a list of all the system_accounts (locations) & panels if not supplied
-        if not authuser_data:
+        # ensure AuthUserData model
+        if authuser_data is None:
             try:
                 authuser_data = await self.api.get_authuser_data()
             except (ClientConnectionError, VivintSkyApiError):
                 _LOGGER.error("Unable to refresh system(s)")
+                return
+        elif isinstance(authuser_data, dict):
+            authuser_data = AuthUserData.model_validate(authuser_data)
 
-        if authuser_data:
-            # for each system_account, make another call to load all the devices
-            for system_data in authuser_data[AuthUserAttribute.USERS][
-                UserAttribute.SYSTEM
-            ]:
-                # is this an existing account_system?
-                system = first_or_none(
-                    self.systems,
-                    lambda system, system_data=system_data: system.id  # type: ignore
-                    == system_data[SystemAttribute.PANEL_ID],
-                )
-                if system:
-                    await system.refresh()
-                else:
-                    full_system_data = await self.api.get_system_data(
-                        system_data[SystemAttribute.PANEL_ID]
-                    )
-                    self.systems.append(
-                        System(
-                            data=full_system_data,
-                            api=self.api,
-                            name=system_data.get(SystemAttribute.SYSTEM_NICKNAME),
-                            is_admin=system_data.get(SystemAttribute.ADMIN, False),
-                        )
-                    )
-
-            _LOGGER.debug(
-                "Refreshed %s system(s)",
-                len(authuser_data[AuthUserAttribute.USERS][UserAttribute.SYSTEM]),
+        # use first user only
+        if not authuser_data.users:
+            return
+        user = authuser_data.users[0]
+        for auth_system in user.systems:
+            # find existing system by panel id
+            system = first_or_none(
+                self.systems,
+                lambda sys, auth_system=auth_system: sys.id == auth_system.panid,
             )
+            if system:
+                await system.refresh()
+            else:
+                full_system_data = await self.api.get_system_data(auth_system.panid)
+                self.systems.append(
+                    System(
+                        data=full_system_data,
+                        api=self.api,
+                        name=auth_system.sn or "",
+                        is_admin=auth_system.ad or False,
+                    )
+                )
+        _LOGGER.debug("Refreshed %s system(s)", len(user.systems))
 
     async def subscribe_for_realtime_updates(
-        self, authuser_data: dict | None = None
+        self, authuser_data: AuthUserData | dict | None = None
     ) -> None:
-        """Subscribe to PubNub for realtime updates."""
-        # make a call to vivint's authuser endpoint to get message broadcast channel if not supplied
-        if not authuser_data:
-            authuser_data = await self.api.get_authuser_data()
-
-        user_data = authuser_data[AuthUserAttribute.USERS]
-
-        pnconfig = PNConfiguration()
-        pnconfig.subscribe_key = PN_SUBSCRIBE_KEY
-        pnconfig.user_id = f"pn-{user_data[UserAttribute.ID].upper()}"
-
-        self.__pubnub = PubNubAsyncio(pnconfig)
-        self.__pubnub_listener = VivintPubNubSubscribeListener(
-            self.handle_pubnub_message
-        )
-        self.__pubnub.add_listener(self.__pubnub_listener)
-
-        pn_channel = (
-            f"{PN_CHANNEL}#{user_data[UserAttribute.MESSAGE_BROADCAST_CHANNEL]}"
-        )
-        self.__pubnub.subscribe().channels(pn_channel).with_presence().execute()
+        """Subscribe for realtime updates via EventStream."""
+        # ensure raw authuser_data for stream
+        if authuser_data is None:
+            result = self.api.get_authuser_data()
+            if inspect.isawaitable(result):
+                authuser_data = await result
+            else:
+                authuser_data = result
+        if isinstance(authuser_data, AuthUserData):
+            raw = authuser_data.model_dump(by_alias=True)
+        else:
+            raw = authuser_data
+        await self._stream.connect()
+        await self._stream.subscribe(raw, self.handle_pubnub_message)
 
     def handle_pubnub_message(self, message: dict) -> None:
         """Handle a pubnub message."""

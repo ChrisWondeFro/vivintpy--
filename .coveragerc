@@ -1,0 +1,14 @@
+[run]
+branch = True
+source = vivintpy
+omit =
+    */demo.py
+    */config.py
+    vivintpy/proto/*
+
+[report]
+omit =
+    */demo.py
+    */config.py
+    tests/*
+    vivintpy/proto/*

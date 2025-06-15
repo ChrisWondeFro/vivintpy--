@@ -6,26 +6,40 @@ from typing import cast
 
 from ..const import LockAttribute
 from ..const import ZWaveDeviceAttribute as Attribute
+from ..models import DoorLockData
 from . import BypassTamperDevice
 
 
 class DoorLock(BypassTamperDevice):
     """Represents a vivint door lock device."""
 
+    def __init__(self, data: dict | DoorLockData, alarm_panel):  # type: ignore[override]
+        # Ensure typed model
+        if isinstance(data, DoorLockData):
+            model = data
+        else:
+            model = DoorLockData.model_validate(data)
+        super().__init__(model, alarm_panel)
+        # Store typed model for safe attribute access
+        self._model: DoorLockData = model
+
+    # ---------------------------------------------------------------------
+    # Typed attribute helpers
+    # ---------------------------------------------------------------------
     @property
     def is_locked(self) -> bool:
-        """Return True if door lock is locked."""
-        return bool(self.data[Attribute.STATE])
+        """Return True if the door lock is locked."""
+        return bool(self._model.state)
 
     @property
     def is_online(self) -> bool:
-        """Return True if door lock is online."""
-        return bool(self.data[Attribute.ONLINE])
+        """Return True if the door lock is online."""
+        return bool(self._model.online)
 
     @property
     def user_code_list(self) -> list[int]:
         """Return the user code list."""
-        return cast(list[int], self.data.get(LockAttribute.USER_CODE_LIST, []))
+        return self._model.user_code_list
 
     async def set_state(self, locked: bool) -> None:
         """Set door lock's state."""

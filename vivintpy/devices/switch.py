@@ -3,26 +3,41 @@
 from __future__ import annotations
 
 from ..const import SwitchAttribute as Attribute
+from ..models import SwitchData
 from . import VivintDevice
 
 
 class Switch(VivintDevice):
     """Represents a Vivint switch device."""
 
+    def __init__(self, data: dict | SwitchData, alarm_panel):  # type: ignore[override]
+        # Ensure we have a typed model
+        if isinstance(data, SwitchData):
+            model = data
+        else:
+            model = SwitchData.model_validate(data)
+        super().__init__(model, alarm_panel)
+        self._data_model: SwitchData = model
+
+    # ------------------------------------------------------------------
+    # Typed attribute helpers
+    # ------------------------------------------------------------------
     @property
     def is_on(self) -> bool:
         """Return True if switch is on."""
-        return bool(self.data[Attribute.STATE])
+        return bool(self._data_model.state)
 
     @property
     def is_online(self) -> bool:
         """Return True if switch is online."""
-        return bool(self.data[Attribute.ONLINE])
+        return bool(self._data_model.online)
 
     @property
     def level(self) -> int:
-        """Return the level of the switch betwen 0..100."""
-        return int(self.data[Attribute.VALUE])
+        """Return the level of the switch between 0..100."""
+        # For binary switches, `value` might be bool; ensure int cast handles it
+        val = self._data_model.value
+        return int(val) if val is not None else 0
 
     async def set_state(
         self,

@@ -17,6 +17,10 @@ def get_zwave_device_info(
     manufacturer_id: int | None, product_type: int | None, product_id: int | None
 ) -> dict[str, str]:
     """Lookup the Z-Wave device based on the manufacturer id, product type and product id."""
+    # Ensure all identifiers are provided; otherwise return empty mapping.
+    if None in (manufacturer_id, product_type, product_id):
+        return {}
+
     key = f"0x{manufacturer_id:04x}:0x{product_type:04x}:0x{product_id:04x}"
     if isinstance((device_info := ZJS_DEVICE_DB.get(key)), dict):
         return device_info

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Type, cast
 
+from pydantic import BaseModel
+
 from ..api import VivintSkyApi
 from ..const import VivintDeviceAttribute as Attribute
 from ..entity import Entity
@@ -49,26 +51,37 @@ def get_device_class(device_type: str) -> Type[VivintDevice]:
 class VivintDevice(Entity):
     """Class to implement a generic vivint device."""
 
-    def __init__(self, data: dict, alarm_panel: AlarmPanel | None = None) -> None:
-        """Initialize a device."""
+    def __init__(self, data: BaseModel | dict, alarm_panel: AlarmPanel | None = None) -> None:  # type: ignore[name-defined]
+        """Initialize a device.
+
+        ``data`` may be either the raw dict payload **or** a validated Pydantic
+        model.  Passing a model gives the generic ``Entity`` class enough
+        information to keep both the model and its raw‐dict representation in
+        sync, which lets subclasses gradually move to typed access without
+        breaking legacy behaviour.
+        """
         super().__init__(data)
         self.alarm_panel = alarm_panel
         self._manufacturer: str | None = None
         self._model: str | None = None
+
+        # Work exclusively with the canonical raw dict copy maintained by
+        # Entity so this logic works regardless of what was passed in.
+        raw = self.data
+
         self._capabilities = (
             {
-                CapabilityCategoryType(capability_category.get(Attribute.TYPE)): [
-                    CapabilityType(capability)
-                    for capability in capability_category.get(Attribute.CAPABILITY)
+                CapabilityCategoryType(cat.get(Attribute.TYPE)): [
+                    CapabilityType(cap) for cap in cat.get(Attribute.CAPABILITY)
                 ]
-                for capability_category in caca
+                for cat in caca
             }
-            if (caca := data.get(Attribute.CAPABILITY_CATEGORY)) is not None
+            if (caca := raw.get(Attribute.CAPABILITY_CATEGORY)) is not None
             else None
         )
         self._features = (
             [FeatureType(feature) for feature in feats if feats.get(feature) is True]
-            if (feats := data.get(Attribute.FEATURES)) is not None
+            if (feats := raw.get(Attribute.FEATURES)) is not None
             else None
         )
         self._parent: VivintDevice | None = None

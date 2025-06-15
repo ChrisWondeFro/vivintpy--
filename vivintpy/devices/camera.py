@@ -9,6 +9,7 @@ from typing import cast
 
 from ..const import CameraAttribute as Attribute
 from ..const import PanelCredentialAttribute
+from ..models import CameraData
 from . import VivintDevice
 from .alarm_panel import AlarmPanel
 
@@ -77,16 +78,23 @@ class Camera(VivintDevice):
 
     alarm_panel: AlarmPanel
 
-    def __init__(self, data: dict, alarm_panel: AlarmPanel):
+    def __init__(self, data: dict | CameraData, alarm_panel: AlarmPanel):
         """Initialize a camera."""
-        super().__init__(data, alarm_panel)
-        if camera_info := CAMERA_INFO_MAP.get(self.data[Attribute.ACTUAL_TYPE]):
+        # Ensure typed model
+        if isinstance(data, CameraData):
+            model = data
+        else:
+            model = CameraData.model_validate(data)
+        super().__init__(model, alarm_panel)
+        self._data_model: CameraData = model
+        actual_type = self._data_model.actual_type or data.get(Attribute.ACTUAL_TYPE)
+        if camera_info := CAMERA_INFO_MAP.get(actual_type):
             self._manufacturer = camera_info[0]
             self._model = camera_info[1]
         else:
-            manufacturer_and_model = self.data[Attribute.ACTUAL_TYPE].split("_")[0:2]
-            self._manufacturer = manufacturer_and_model[0].title()
-            self._model = manufacturer_and_model[1].upper()
+            manufacturer_and_model = (actual_type or "").split("_")[0:2]
+            self._manufacturer = manufacturer_and_model[0].title() if manufacturer_and_model else None
+            self._model = manufacturer_and_model[1].upper() if len(manufacturer_and_model) > 1 else None
 
     @property
     def serial_number(self) -> str:
@@ -101,7 +109,7 @@ class Camera(VivintDevice):
     @property
     def capture_clip_on_motion(self) -> bool:
         """Return True if capture clip on motion is active."""
-        return bool(self.data[Attribute.CAPTURE_CLIP_ON_MOTION])
+        return bool(self._data_model.capture_clip_on_motion)
 
     @property
     def extend_chime_enabled(self) -> bool:
@@ -111,32 +119,32 @@ class Camera(VivintDevice):
     @property
     def ip_address(self) -> str:
         """Camera's IP address."""
-        return str(self.data[Attribute.CAMERA_IP_ADDRESS])
+        return str(self._data_model.camera_ip_address) if self._data_model.camera_ip_address else ""
 
     @property
     def is_in_deter_mode(self) -> bool:
         """Return True if deter mode is active."""
-        return bool(self.data[Attribute.DETER_ON_DUTY])
+        return bool(self._data_model.deter_on_duty)
 
     @property
     def mac_address(self) -> str:
         """Camera's MAC Address."""
-        return str(self.data[Attribute.CAMERA_MAC])
+        return str(self._data_model.camera_mac) if self._data_model.camera_mac else ""
 
     @property
     def is_in_privacy_mode(self) -> bool:
         """Return True if privacy mode is active."""
-        return bool(self.data[Attribute.CAMERA_PRIVACY])
+        return bool(self._data_model.camera_privacy)
 
     @property
     def is_online(self) -> bool:
         """Return True if camera is online."""
-        return bool(self.data[Attribute.ONLINE])
+        return bool(self._data_model.online)
 
     @property
     def wireless_signal_strength(self) -> int:
         """Camera's wireless signal strength."""
-        return int(self.data[Attribute.WIRELESS_SIGNAL_STRENGTH])
+        return int(self._data_model.wireless_signal_strength or 0)
 
     async def request_thumbnail(self) -> None:
         """Request a new thumbnail for the camera."""
@@ -148,8 +156,9 @@ class Camera(VivintDevice):
         """Return the latest camera thumbnail URL."""
         # Sometimes this date field comes back with a "Z" at the end
         # and sometimes it doesn't, so let's just safely remove it.
+        camera_thumbnail_raw = (self._data_model.camera_thumbnail_date or "").replace("Z", "")
         camera_thumbnail_date = datetime.strptime(
-            self.data[Attribute.CAMERA_THUMBNAIL_DATE].replace("Z", ""),
+            camera_thumbnail_raw,
             "%Y-%m-%dT%H:%M:%S.%f",
         )
         thumbnail_timestamp = int(camera_thumbnail_date.timestamp() * 1000)
@@ -179,7 +188,7 @@ class Camera(VivintDevice):
             return None
         _type = "i" if access_type == RtspUrlType.PANEL else "e"
         url = self.data[f"c{_type}u{'' if hd else 's'}"][0]
-        return f"{url[:7]}{credentials[PanelCredentialAttribute.NAME]}:{credentials[PanelCredentialAttribute.PASSWORD]}@{url[7:]}"
+        return f"{url[:7]}{credentials.name}:{credentials.password}@{url[7:]}"
 
     async def get_rtsp_url(
         self,
