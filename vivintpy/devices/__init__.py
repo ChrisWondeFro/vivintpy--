@@ -256,3 +256,6 @@ class UnknownDevice(VivintDevice):
     def __repr__(self) -> str:
         """Return custom __repr__ of device."""
         return f"<{self.__class__.__name__}|{self.data[Attribute.TYPE]} {self.id}, {self.name}>"
+
+
+Device = VivintDevice  # Alias VivintDevice to Device for easier import

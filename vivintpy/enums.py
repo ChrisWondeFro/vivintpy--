@@ -289,6 +289,23 @@ class EquipmentCode(IntEnum):
 
 
 @unique
+class EmergencyType(IntEnum):
+    """Emergency type."""
+
+    FIRE = 0
+    MEDICAL = 1
+    POLICE = 2
+
+    # Handle unknown/future emergency type
+    UNKNOWN = -1
+
+    @classmethod
+    def _missing_(cls, value: object) -> EmergencyType:
+        _LOGGER.debug("Unknown emergency type value: %s", value)
+        return cls.UNKNOWN
+
+
+@unique
 class EquipmentType(IntEnum):
     """Equipment type."""
 

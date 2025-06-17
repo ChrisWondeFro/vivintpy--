@@ -23,3 +23,7 @@ class VivintSkyApiExpiredCookieError(VivintSkyApiError):
 
 class VivintSkyApiMissingCookieError(VivintSkyApiError):
     """VivintSky API missing cookie error occurred."""
+
+
+class VivintDeviceFeatureNotSupportedError(VivintError):
+    """Vivint device feature not supported error occurred."""

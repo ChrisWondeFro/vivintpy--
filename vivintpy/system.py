@@ -12,6 +12,7 @@ from .entity import Entity
 from .models import SystemData
 from .user import User
 from .utils import first_or_none
+from .devices import VivintDevice  # Added for type hint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +55,10 @@ class System(Entity):
     def name(self) -> str:
         """System's name."""
         return self._name
+
+    def get_device(self, device_id: int) -> VivintDevice | None:
+        """Return a device by its ID from the system's device_map."""
+        return self.device_map.get(device_id)
 
     async def refresh(self) -> None:
         """Reload a system's data from the VivintSky API."""
