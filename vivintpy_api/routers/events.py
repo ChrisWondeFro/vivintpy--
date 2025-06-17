@@ -24,6 +24,11 @@ async def websocket_events_endpoint(
     await websocket.accept()
     logger.info(f"WebSocket connection accepted for user: {current_user.username}")
 
+    # Optional per-client filtering based on query parameters
+    query_params = websocket.query_params
+    system_id_filter = int(query_params.get("system_id")) if query_params.get("system_id") else None
+    device_id_filter = int(query_params.get("device_id")) if query_params.get("device_id") else None
+
     if not account or not account.is_connected:
         logger.warning(f"Vivint account not available or not connected for user {current_user.username}. Closing WebSocket.")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Vivint service not available or not connected.")
@@ -37,20 +42,37 @@ async def websocket_events_endpoint(
          return
 
 
-    event_queue = asyncio.Queue()
+    # Queue with back-pressure protection (max 1000 messages).
+    # If client lags and the queue overflows we will close the connection.
+    event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
 
     async def vivint_event_handler(event_name: str, event_data: Any):
+        """Callback from Vivint EventStream.
+
+        Applies optional system/device filtering and enqueues the payload.
+        If the queue is full, close the WebSocket with code 1011.
         """
-        Callback for vivintpy events. Puts event onto the client's queue.
-        event_data can be a Pydantic model (e.g. a Device) or other data.
-        """
-        logger.debug(f"User {current_user.username} - Vivint event received: Name='{event_name}', Data='{type(event_data)}'")
+        # ---------------- Filtering ----------------
+        if system_id_filter is not None:
+            data_system_id = getattr(event_data, "system_id", None)
+            if data_system_id is None and hasattr(event_data, "system"):
+                data_system_id = getattr(event_data.system, "id", None)
+            if data_system_id != system_id_filter:
+                return  # Skip non-matching system events
+
+        if device_id_filter is not None and getattr(event_data, "id", None) != device_id_filter:
+            return  # Skip non-matching device events
+        # -------------------------------------------
+
+        payload = {"event_name": event_name, "data": jsonable_encoder(event_data)}
         try:
-            # Use jsonable_encoder to handle Pydantic models and other complex types
-            payload = {"event_name": event_name, "data": jsonable_encoder(event_data)}
-            await event_queue.put(payload)
-        except Exception as e:
-            logger.error(f"User {current_user.username} - Error processing or queueing Vivint event '{event_name}': {e}", exc_info=True)
+            event_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.warning(f"WebSocket queue full for user {current_user.username}; closing connection.")
+            # Close the connection; the main loop will detect the disconnect.
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Client too slow to consume events.")
+            # Best-effort cleanup
+            account.remove_event_listener(vivint_event_handler)
 
     # Register the event handler with the shared Vivint Account
     try:
@@ -63,11 +85,15 @@ async def websocket_events_endpoint(
 
     try:
         while True:
-            # Wait for an event from the queue and send it to the WebSocket client
-            event_to_send = await event_queue.get()
-            await websocket.send_json(event_to_send)
-            logger.debug(f"Sent event to WebSocket client {current_user.username}: {event_to_send.get('event_name')}")
-            event_queue.task_done()
+            try:
+                # Wait up to 30 s for the next event; otherwise send heartbeat
+                event_to_send = await asyncio.wait_for(event_queue.get(), timeout=30)
+                await websocket.send_json(event_to_send)
+                logger.debug(f"Sent event to WebSocket client {current_user.username}: {event_to_send.get('event_name')}")
+                event_queue.task_done()
+            except asyncio.TimeoutError:
+                # Idle – send heartbeat ping
+                await websocket.send_json({"event_name": "ping"})
     except WebSocketDisconnect:
         logger.info(f"WebSocket client {current_user.username} disconnected.")
     except asyncio.CancelledError:
@@ -89,6 +115,12 @@ async def websocket_events_endpoint(
         except Exception as e:
             logger.error(f"Error removing Vivint event listener for {current_user.username}: {e}", exc_info=True)
         
+        # Drain outstanding events before shutdown
+        try:
+            await asyncio.wait_for(event_queue.join(), timeout=3)
+        except asyncio.TimeoutError:
+            pass  # Ignore leftovers
+
         # Ensure the websocket is closed if not already handled by WebSocketDisconnect
         if websocket.client_state != WebSocketDisconnect:
              try:
@@ -100,5 +132,5 @@ async def websocket_events_endpoint(
     # finally:
         # Unsubscribe, cleanup
         # print("Cleaning up WebSocket connection")
-    raise NotImplementedError("/ws/events not fully implemented")
+    
 

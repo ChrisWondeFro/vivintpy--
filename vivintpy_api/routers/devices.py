@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi.responses import StreamingResponse
+import httpx
 from typing import List, Union, Any
 from pydantic import BaseModel
 
@@ -42,7 +44,7 @@ async def get_system_and_device(
     account: Account = Depends(deps.get_user_account),
 ) -> tuple[System, Device]:
     print(f"--- ROUTER get_system_and_device: Received account with systems: {bool(account.systems)} ---")
-    system = first_or_none(s for s in account.systems if s.id == system_id)
+    system = first_or_none(account.systems, lambda s: s.id == system_id)
     if not system:
         print(f"--- ROUTER get_system_and_device: System {system_id} not found in account.systems ---")
         raise HTTPException(
@@ -279,3 +281,40 @@ async def request_camera_snapshot(
         return device
     except VivintSkyApiError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to request camera snapshot: {e}")
+
+# ----------------------------------------------------------------------
+# GET /snapshot – returns latest (or freshly requested) camera image
+# ----------------------------------------------------------------------
+@router.get("/{device_id}/snapshot", response_class=StreamingResponse)
+async def get_camera_snapshot(
+    refresh: bool = False,
+    system_and_device: tuple[System, Device] = Depends(get_system_and_device),
+):
+    """Return the latest camera snapshot as JPEG.
+
+    If `refresh=true` is supplied, the API first requests a new snapshot and
+    then immediately returns the current thumbnail URL (most cameras refresh
+    within a second; clients can re-try if they still see the old image).
+    """
+    _, device = system_and_device
+    if not isinstance(device, Camera):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device is not a Camera.")
+
+    if refresh:
+        try:
+            await device.request_thumbnail()
+        except VivintSkyApiError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to request new snapshot: {exc}") from exc
+
+    # Get latest thumbnail URL
+    url = await device.get_thumbnail_url()
+    if not url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot URL unavailable.")
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return StreamingResponse(resp.aiter_bytes(), media_type="image/jpeg")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to fetch snapshot: {exc}") from exc

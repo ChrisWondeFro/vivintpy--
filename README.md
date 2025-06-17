@@ -47,7 +47,7 @@ See `demo.py` for a working example.
 | Device commands            | ✅        |
 | Panel firmware update      | ✅        |
 | Async API                  | ✅        |
-| Unit tests                 | 🚧        |
+| Unit tests                 | ✅        |
 
 ---
 
@@ -136,13 +136,55 @@ The API uses a two-step process for accounts with Multi-Factor Authentication (M
 
     Upon successful verification, the API will return your access and refresh tokens.
 
+### Token Refresh
+
+Use your long-lived *API* `refresh_token` to obtain a fresh access token (and a rotated refresh token):
+
+```sh
+curl -X POST http://127.0.0.1:8000/auth/refresh-token \
+     -H "Content-Type: application/json" \
+     -d '{"refresh_token": "<YOUR_REFRESH_TOKEN>"}'
+```
+
+A new JSON payload with `access_token` (and optionally a new `refresh_token`) will be returned.
+
+### Available API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST   | `/auth/login` | Initiate login, returns `MFA_REQUIRED` when applicable |
+| POST   | `/auth/verify-mfa` | Complete MFA challenge & issue tokens |
+| POST   | `/auth/refresh-token` | Refresh/rotate API tokens |
+| GET    | `/systems/` | List systems linked to the authenticated account |
+| GET    | `/systems/{system_id}` | Retrieve details for a specific system |
+| GET    | `/systems/{system_id}/panel` | Current state of the system's alarm panel |
+| POST   | `/systems/{system_id}/panel/arm-stay` | Arm panel in **Stay** mode |
+| POST   | `/systems/{system_id}/panel/arm-away` | Arm panel in **Away** mode |
+| POST   | `/systems/{system_id}/panel/disarm` | Disarm panel (requires PIN) |
+| POST   | `/systems/{system_id}/panel/emergency` | Trigger panic / fire / medical alarm |
+| POST   | `/systems/{system_id}/panel/reboot` | Reboot the alarm panel |
+| GET    | `/systems/{system_id}/devices` | List all devices for the system |
+| GET    | `/systems/{system_id}/devices/{device_id}` | Retrieve details for a specific device |
+| GET    | `/systems/{system_id}/devices/{device_id}/snapshot` | Fetch latest camera snapshot (JPEG; add `?refresh=true` to request new) |
+| WebSocket | `/ws/events` | Real-time event stream for all systems & devices |
+
+> **Note**
+> All routes except the `/auth/*` series require a valid **Bearer** `access_token` in the `Authorization` header.
+
+### Example: List Devices
+
+```sh
+curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+     http://127.0.0.1:8000/systems/123456/devices
+```
+
 ---
 
 ## Fork & Credits
 
 - **Original Author:** Nathan Spencer (2021–2023)
 - **Forked from:** [ovirs/pyvivint](https://github.com/ovirs/pyvivint) and inspired by [Riebart/vivint.py](https://github.com/Riebart/vivint.py)
-- **Current Maintainer:** [Your Name], 2025–present
+- **Current Maintainer:** Christian Mandefro, 2025–present
 
 This fork is maintained independently and may diverge from upstream.
 
