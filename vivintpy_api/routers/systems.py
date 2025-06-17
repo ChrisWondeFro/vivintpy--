@@ -24,10 +24,19 @@ class TriggerEmergencyPayload(BaseModel):
     emergency_type: EmergencyType
 
 
+
+# Helper
+def _get_system(account: Account, system_id: int) -> System | None:
+    """Return the System with matching ID from the account or None."""
+    for sys in account.systems:
+        if sys.id == system_id:
+            return sys
+    return None
+
 # --- System Endpoints ---
 @router.get("/", response_model=List[SystemResponse])
 async def list_systems(
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """
     List all systems associated with the configured Vivint account.
@@ -38,17 +47,17 @@ async def list_systems(
         # connect() should populate this.
         return []
     # Convert vivintpy.System objects to SystemResponse objects
-    return [SystemResponse(id=sys.id, name=sys.name) for sys in account.systems.values()]
+    return [SystemResponse(id=sys.id, name=sys.name) for sys in account.systems]
 
 @router.get("/{system_id}", response_model=SystemResponse)
 async def get_system_details(
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """
     Get detailed information for a specific system by its ID.
     """
-    system = account.get_system(system_id)
+    system = _get_system(account, system_id)
     if not system:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -61,16 +70,16 @@ async def get_system_details(
 @router.get("/{system_id}/panel", response_model=AlarmPanelResponse)
 async def get_alarm_panel_details(
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """
     Get detailed information for the alarm panel of a specific system.
     """
-    system = account.get_system(system_id)
+    system = _get_system(account, system_id)
     if not system:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"System with ID {system_id} not found.")
     
-    alarm_panel = system.alarm_panel
+    alarm_panel = (system.alarm_panels[0] if system.alarm_panels else None)
     if not alarm_panel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Alarm panel not found for system ID {system_id}.")
     
@@ -87,13 +96,13 @@ async def get_alarm_panel_details(
 @router.post("/{system_id}/panel/arm-stay", response_model=AlarmPanelResponse)
 async def arm_stay_panel(
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """Arm the system's panel to 'Stay' mode."""
-    system = account.get_system(system_id)
-    if not system or not system.alarm_panel:
+    system = _get_system(account, system_id)
+    if not system or not (system.alarm_panels[0] if system.alarm_panels else None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System or alarm panel not found.")
-    alarm_panel = system.alarm_panel
+    alarm_panel = (system.alarm_panels[0] if system.alarm_panels else None)
     try:
         await alarm_panel.set_armed_state(ArmedState.STAY)
         return AlarmPanelResponse(
@@ -111,13 +120,13 @@ async def arm_stay_panel(
 @router.post("/{system_id}/panel/arm-away", response_model=AlarmPanelResponse)
 async def arm_away_panel(
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """Arm the system's panel to 'Away' mode."""
-    system = account.get_system(system_id)
-    if not system or not system.alarm_panel:
+    system = _get_system(account, system_id)
+    if not system or not (system.alarm_panels[0] if system.alarm_panels else None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System or alarm panel not found.")
-    alarm_panel = system.alarm_panel
+    alarm_panel = (system.alarm_panels[0] if system.alarm_panels else None)
     try:
         await alarm_panel.set_armed_state(ArmedState.AWAY)
         return AlarmPanelResponse(
@@ -136,13 +145,13 @@ async def arm_away_panel(
 async def disarm_panel(
     system_id: int,
     payload: DisarmPayload,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """Disarm the system's panel using a PIN."""
-    system = account.get_system(system_id)
-    if not system or not system.alarm_panel:
+    system = _get_system(account, system_id)
+    if not system or not (system.alarm_panels[0] if system.alarm_panels else None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System or alarm panel not found.")
-    alarm_panel = system.alarm_panel
+    alarm_panel = (system.alarm_panels[0] if system.alarm_panels else None)
     try:
         await alarm_panel.disarm(payload.pin)
         return AlarmPanelResponse(
@@ -161,14 +170,14 @@ async def disarm_panel(
 async def trigger_emergency_alarm_panel(
     system_id: int,
     payload: TriggerEmergencyPayload,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """Trigger an emergency alarm on the panel (e.g., panic, fire, medical)."""
-    system = account.get_system(system_id)
-    if not system or not system.alarm_panel:
+    system = _get_system(account, system_id)
+    if not system or not (system.alarm_panels[0] if system.alarm_panels else None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System or alarm panel not found.")
     try:
-        await system.alarm_panel.trigger_emergency_alarm(payload.emergency_type)
+        await (system.alarm_panels[0] if system.alarm_panels else None).trigger_emergency_alarm(payload.emergency_type)
         return {"message": f"Emergency alarm ({payload.emergency_type.name}) triggered successfully."}
     except AttributeError:
          raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Emergency trigger functionality not available on the alarm panel object.")
@@ -178,14 +187,14 @@ async def trigger_emergency_alarm_panel(
 @router.post("/{system_id}/panel/reboot", status_code=status.HTTP_202_ACCEPTED)
 async def reboot_alarm_panel( 
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """Reboot the system's alarm panel."""
-    system = account.get_system(system_id)
-    if not system or not system.alarm_panel:
+    system = _get_system(account, system_id)
+    if not system or not (system.alarm_panels[0] if system.alarm_panels else None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System or alarm panel not found.")
     try:
-        await system.alarm_panel.reboot()
+        await (system.alarm_panels[0] if system.alarm_panels else None).reboot()
         return {"message": "Panel reboot command sent successfully."}
     except AttributeError:
          raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Reboot functionality not available on the alarm panel object.")

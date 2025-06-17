@@ -42,8 +42,14 @@ class WirelessSensor(BypassTamperDevice, VivintDevice):
 
     @property
     def software_version(self) -> str | None:
-        """Return the software version of this device, if any."""
-        return self._data_model.firmware_version
+        """Return the software version as a string, if any.
+
+        The typed model stores ``firmware_version`` as an ``int`` for many
+        sensors.  Convert to ``str`` so that the public ``DeviceResponse``
+        Pydantic model always receives a string.
+        """
+        sv = self._data_model.firmware_version
+        return str(sv) if sv not in (None, "") else None
 
     @property
     def equipment_code(self) -> EquipmentCode:

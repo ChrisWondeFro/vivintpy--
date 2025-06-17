@@ -78,15 +78,10 @@ class Camera(VivintDevice):
 
     alarm_panel: AlarmPanel
 
-    def __init__(self, data: dict | CameraData, alarm_panel: AlarmPanel):
+    def __init__(self, data: dict, alarm_panel: AlarmPanel):
         """Initialize a camera."""
-        # Ensure typed model
-        if isinstance(data, CameraData):
-            model = data
-        else:
-            model = CameraData.model_validate(data)
-        super().__init__(model, alarm_panel)
-        self._data_model: CameraData = model
+        super().__init__(data, alarm_panel)
+        self._data_model: CameraData = CameraData.model_validate(data)
         actual_type = self._data_model.actual_type or data.get(Attribute.ACTUAL_TYPE)
         if camera_info := CAMERA_INFO_MAP.get(actual_type):
             self._manufacturer = camera_info[0]
@@ -103,8 +98,14 @@ class Camera(VivintDevice):
 
     @property
     def software_version(self) -> str | None:
-        """Return the camera's software version."""
-        return self.data.get(Attribute.SOFTWARE_VERSION)
+        """Return the camera's software version as a string.
+
+        Cameras report `software_version` as either an int or str.  Convert
+        any numeric value to `str` to satisfy the FastAPI `DeviceResponse`
+        validation requirement.
+        """
+        sv = self.data.get(Attribute.SOFTWARE_VERSION)
+        return str(sv) if sv not in (None, "") else None
 
     @property
     def capture_clip_on_motion(self) -> bool:

@@ -50,6 +50,13 @@ def send_deprecation_warning(old_name: str, new_name: str) -> None:
     _LOGGER.warning(message)
 
 
+def get_challenge_from_verifier(code_verifier: str) -> str:
+    """Generate a PKCE code challenge from a verifier."""
+    code_challenge = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    code_challenge = base64.urlsafe_b64encode(code_challenge).decode("utf-8")
+    return code_challenge.strip("=")
+
+
 def generate_code_challenge() -> tuple[str, str]:
     """Generate PKCE code verifier and challenge for authentication."""
     code_verifier = base64.urlsafe_b64encode(os.urandom(40)).decode("utf-8")

@@ -3,6 +3,7 @@ from typing import List, Union, Any
 from pydantic import BaseModel
 
 from .. import deps
+from vivintpy.utils import first_or_none  # Utility helper for safe list access
 from vivintpy import Account, System
 from vivintpy.devices import Device # Base device model
 # Import specific device types from vivintpy
@@ -38,7 +39,7 @@ router = APIRouter(
 async def get_system_and_device(
     system_id: int,
     device_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account),
+    account: Account = Depends(deps.get_user_account),
 ) -> tuple[System, Device]:
     print(f"--- ROUTER get_system_and_device: Received account with systems: {bool(account.systems)} ---")
     system = first_or_none(s for s in account.systems if s.id == system_id)
@@ -48,7 +49,7 @@ async def get_system_and_device(
             status_code=status.HTTP_404_NOT_FOUND, detail="System not found"
         )
     
-    print(f"--- ROUTER get_system_and_device: Found system id {id(system)}, panel_id {system.panel.id if system.panel else 'N/A'}, get_device is {getattr(system, 'get_device', 'MISSING_GET_DEVICE')} ({getattr(getattr(system, 'get_device', None), '__name__', 'N/A')}) ---")
+    print(f"--- ROUTER get_system_and_device: Found system id {id(system)}, devices={len(system.device_map)} ---")
 
     device = system.get_device(device_id)
     if not device:
@@ -87,7 +88,7 @@ class ThermostatModePayload(BaseModel):
 @router.get("/", response_model=List[DeviceResponse]) 
 async def list_devices_in_system(
     system_id: int,
-    account: Account = Depends(deps.get_shared_vivint_account)
+    account: Account = Depends(deps.get_user_account)
 ):
     """List all devices for a given system."""
     system = first_or_none(account.systems, lambda s: s.id == system_id)
@@ -95,7 +96,7 @@ async def list_devices_in_system(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"System with ID {system_id} not found.")
     # Convert VivintDevice objects to DeviceResponse objects
     # Pydantic's from_attributes will map attributes from VivintDevice to DeviceResponse
-    return [DeviceResponse.model_validate(device) for device in system.devices.values()]
+    return [DeviceResponse.model_validate(device) for device in system.device_map.values()]
 
 
 # Union of specific Pydantic response models for OpenAPI schema

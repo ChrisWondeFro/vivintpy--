@@ -32,7 +32,11 @@ from .exceptions import (
 )
 from .models import AuthUserData, SystemData, PanelCredentialsData, PanelUpdateData
 from .proto import beam_pb2, beam_pb2_grpc
-from .utils import generate_code_challenge, generate_state
+from .utils import (
+    generate_code_challenge,
+    generate_state,
+    get_challenge_from_verifier,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +54,7 @@ class VivintSkyApi:
         password: str | None = None,
         refresh_token: str | None = None,
         client_session: aiohttp.ClientSession | None = None,
+        code_verifier: str | None = None,
     ) -> None:
         """Initialize the VivintSky API."""
         self.__username = username
@@ -57,15 +62,37 @@ class VivintSkyApi:
         self.__refresh_token = refresh_token
         self.__client_session = client_session or self.__get_new_client_session()
         self.__has_custom_client_session = client_session is not None
-        self.__code_verifier: str | None = None
+        self.__code_verifier = code_verifier
         self.__mfa_pending = False
         self.__mfa_type = "code"
         self.__token: dict | None = None
 
     @property
+    def client_session(self) -> aiohttp.ClientSession:
+        """Return the client session."""
+        return self.__client_session
+
+    @property
     def tokens(self) -> dict:
         """Return the tokens, if any."""
         return self.__token or {}
+
+    @property
+    def code_verifier(self) -> str | None:
+        """Return the PKCE code verifier."""
+        return self.__code_verifier
+
+    def get_session_cookies(self) -> list:
+        """Return the session cookies as a serializable list."""
+        return [
+            {
+                "name": cookie.key,
+                "value": cookie.value,
+                "domain": cookie["domain"],
+                "path": cookie["path"],
+            }
+            for cookie in self.__client_session.cookie_jar
+        ]
 
     def is_session_valid(self) -> bool:
         """Return `True` if the token is still valid."""
@@ -483,6 +510,8 @@ class VivintSkyApi:
                 )
             return None
 
+
+
     def __get_new_client_session(self) -> aiohttp.ClientSession:
         """Create a new aiohttp.ClientSession object."""
         ssl_context = ssl.create_default_context(
@@ -501,7 +530,10 @@ class VivintSkyApi:
 
         client_id = "ios"
         redirect_uri = "vivint://app/oauth_redirect"
-        self.__code_verifier, code_challenge = generate_code_challenge()
+        if not self.code_verifier:
+            self.__code_verifier, code_challenge = generate_code_challenge()
+        else:
+            code_challenge = get_challenge_from_verifier(self.code_verifier)
         state = generate_state()
 
         # Signal PKCE to OAuth endpoint to get appropriate cookies

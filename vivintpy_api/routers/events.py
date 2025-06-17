@@ -18,8 +18,8 @@ router = APIRouter(
 @router.websocket("/ws/events")
 async def websocket_events_endpoint(
     websocket: WebSocket,
-    current_user: deps.TokenData = Depends(deps.get_current_user), # Secure WebSocket
-    account: Account = Depends(deps.get_shared_vivint_account)
+    current_user: deps.TokenData = Depends(deps.get_current_active_user),
+    account: Account = Depends(deps.get_user_account)
 ):
     await websocket.accept()
     logger.info(f"WebSocket connection accepted for user: {current_user.username}")

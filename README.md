@@ -83,6 +83,61 @@ The demo will:
 
 ---
 
+## FastAPI Wrapper
+
+This repository includes a production-grade FastAPI wrapper that exposes `vivintpy`'s functionality via a RESTful API.
+
+### Running the API
+
+1.  **Set Environment Variables:**
+
+    The API requires both Vivint credentials and Redis connection details. Create a `.env` file in the root directory or export the following variables:
+
+    ```sh
+    # Vivint Credentials
+    VIVINT_USER="your@email.com"
+    VIVINT_PASS="yourpassword"
+
+    # Redis Configuration
+    REDIS_HOST="localhost"
+    REDIS_PORT=6379
+    REDIS_DB=0
+    ```
+
+2.  **Install Dependencies and Run:**
+
+    ```sh
+    poetry install
+    poetry run uvicorn vivintpy_api.main:app --reload
+    ```
+
+3.  **Access the API Docs:**
+
+    Navigate to [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) to access the interactive FastAPI documentation.
+
+### Authentication Flow (MFA)
+
+The API uses a two-step process for accounts with Multi-Factor Authentication (MFA) enabled.
+
+1.  **Initial Login:**
+
+    Make a POST request to `/auth/login` with your `username` and `password` as form data. If MFA is required, the API will respond with a `400 Bad Request` and a JSON body containing `{"message": "MFA_REQUIRED", "mfa_session_id": "..."}`.
+
+2.  **Verify MFA:**
+
+    Use the `mfa_session_id` from the previous step and your MFA code to make a POST request to `/auth/verify-mfa`. The request body should be a JSON object like this:
+
+    ```json
+    {
+      "mfa_session_id": "...",
+      "mfa_code": "123456"
+    }
+    ```
+
+    Upon successful verification, the API will return your access and refresh tokens.
+
+---
+
 ## Fork & Credits
 
 - **Original Author:** Nathan Spencer (2021–2023)

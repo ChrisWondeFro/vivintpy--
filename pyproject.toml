@@ -25,6 +25,7 @@ python-multipart = "^0.0.20"
 pydantic-settings = "^2.0.0"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+redis = {extras = ["hiredis"], version = "^5.0.1"}
 
 [tool.poetry.group.dev.dependencies]
 tox = ">=3.28,<5.0"

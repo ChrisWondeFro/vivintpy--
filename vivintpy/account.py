@@ -33,6 +33,7 @@ class Account:
         password: str | None = None,
         refresh_token: str | None = None,
         client_session: aiohttp.ClientSession | None = None,
+        code_verifier: str | None = None,
         stream: EventStream | None = None,
     ):
         """Initialize an account."""
@@ -43,6 +44,7 @@ class Account:
             password=password,
             refresh_token=refresh_token,
             client_session=client_session,
+            code_verifier=code_verifier,
         )
         self.systems: list[System] = []
         self._stream: EventStream = stream if stream is not None else get_default_stream(self._api)

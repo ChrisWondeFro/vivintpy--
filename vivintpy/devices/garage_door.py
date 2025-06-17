@@ -14,13 +14,9 @@ from . import VivintDevice
 class GarageDoor(VivintDevice):
     """Represents a vivint garage door device."""
 
-    def __init__(self, data: dict | GarageDoorData, alarm_panel: AlarmPanel | None = None):  # type: ignore[override]
-        if isinstance(data, GarageDoorData):
-            model = data
-        else:
-            model = GarageDoorData.model_validate(data)
-        super().__init__(model, alarm_panel)
-        self._data_model: GarageDoorData = model
+    def __init__(self, data: dict, alarm_panel: AlarmPanel | None = None):  # type: ignore[override]
+        super().__init__(data, alarm_panel)
+        self._data_model: GarageDoorData = GarageDoorData.model_validate(data)
 
     """Represents a vivint garage door device."""
 

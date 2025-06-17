@@ -36,6 +36,12 @@ class System(Entity):
             User(user_data, self) for user_data in self._data_model.system.users
         ]
 
+        # Build a mapping of device_id -> device object spanning all alarm panels
+        self.device_map: dict[int, VivintDevice] = {}
+        for _panel in self.alarm_panels:
+            for _device in _panel.devices:
+                self.device_map[_device.id] = _device
+
     @property
     def api(self) -> VivintSkyApi:
         """Return the API."""
@@ -80,6 +86,13 @@ class System(Entity):
                 alarm_panel.refresh(panel_data)
             else:
                 self.alarm_panels.append(AlarmPanel(panel_data, self))
+
+        # Rebuild device map after refresh so lookups remain accurate
+        self.device_map = {
+            device.id: device
+            for panel in self.alarm_panels
+            for device in panel.devices
+        }
 
     def update_user_data(self, data: list[dict]) -> None:
         """Update user data."""

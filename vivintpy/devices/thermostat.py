@@ -17,15 +17,11 @@ _LOGGER = logging.getLogger(__name__)
 class Thermostat(VivintDevice):
     """Represents a Vivint thermostat device."""
 
-    def __init__(self, data: dict | ThermostatData, alarm_panel: AlarmPanel):
+    def __init__(self, data: dict, alarm_panel: AlarmPanel):
         """Initialize a thermostat."""
-        if isinstance(data, ThermostatData):
-            model = data
-        else:
-            model = ThermostatData.model_validate(data)
-        super().__init__(model, alarm_panel)
+        super().__init__(data, alarm_panel)
         # Store validated data model for typed access
-        self._data_model: ThermostatData = model
+        self._data_model: ThermostatData = ThermostatData.model_validate(data)
 
         if self._data_model.actual_type == DeviceType.POD_NEST_THERMOSTAT.value:
             self._manufacturer, self._model = "Google", "Nest"

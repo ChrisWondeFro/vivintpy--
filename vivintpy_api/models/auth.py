@@ -33,6 +33,11 @@ class TokenData(BaseModel):
     vivint_refresh_token: str | None = None
 
 
+class RefreshTokenRequest(BaseModel):
+    """Request model for refreshing an API token."""
+    refresh_token: str = Field(..., description="The API refresh token")
+
+
 class AuthUserResponse(BaseModel):
     """Pydantic model for the authenticated user's data."""
 

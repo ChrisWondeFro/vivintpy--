@@ -20,8 +20,8 @@ class DoorLock(BypassTamperDevice):
         else:
             model = DoorLockData.model_validate(data)
         super().__init__(model, alarm_panel)
-        # Store typed model for safe attribute access
-        self._model: DoorLockData = model
+        # Store typed model for safe attribute access without shadowing base _model
+        self._data_model: DoorLockData = model
 
     # ---------------------------------------------------------------------
     # Typed attribute helpers
@@ -29,17 +29,17 @@ class DoorLock(BypassTamperDevice):
     @property
     def is_locked(self) -> bool:
         """Return True if the door lock is locked."""
-        return bool(self._model.state)
+        return bool(self._data_model.state)
 
     @property
     def is_online(self) -> bool:
         """Return True if the door lock is online."""
-        return bool(self._model.online)
+        return bool(self._data_model.online)
 
     @property
     def user_code_list(self) -> list[int]:
         """Return the user code list."""
-        return self._model.user_code_list
+        return self._data_model.user_code_list
 
     async def set_state(self, locked: bool) -> None:
         """Set door lock's state."""

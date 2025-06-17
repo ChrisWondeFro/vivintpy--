@@ -107,9 +107,19 @@ class VivintDevice(Entity):
         return True
 
     @property
-    def name(self) -> str | None:
-        """Device's name."""
-        return self.data.get(Attribute.NAME)
+    def name(self) -> str:
+        """Device's name. Guaranteed to be non-empty.
+
+        If the underlying data does not include a user-defined name, we fall
+        back to a synthesized value like "Camera 1234" so that the FastAPI
+        `DeviceResponse` model (which requires a non-null `name`) always
+        validates successfully.
+        """
+        raw_name = self.data.get(Attribute.NAME)
+        if raw_name not in (None, ""):
+            return str(raw_name)
+        # Fallback – generate a friendly name from the device type and id.
+        return f"{self.device_type.name.title()} {self.id}"
 
     @property
     def battery_level(self) -> int | None:
@@ -119,6 +129,29 @@ class VivintDevice(Entity):
         if (battery_level := self.data.get(Attribute.BATTERY_LEVEL)) not in (None, ""):
             return battery_level
         return 0 if self.low_battery else 100
+
+    @property
+    def online(self) -> bool:
+        """Return True if the device reports as online.
+
+        This unified property is required by the public `DeviceResponse`
+        Pydantic model.  Concrete device classes in *vivintpy* already expose
+        an `is_online` property – we reuse that when present.  For other
+        devices we fall back to the raw `ol` field in the payload.  If neither
+        source is available we assume the device is offline.
+        """
+        # First preference: subclasses often implement `is_online` (property)
+        is_online_attr = getattr(self, "is_online", None)
+        if isinstance(is_online_attr, bool):
+            return is_online_attr
+        if callable(is_online_attr):
+            try:
+                return bool(is_online_attr())  # type: ignore[arg-type]
+            except Exception:  # pragma: no cover
+                pass
+        # Fallback: use the raw data field if present (1/0 or True/False)
+        raw_online = self.data.get(Attribute.ONLINE)
+        return bool(raw_online)
 
     @property
     def capabilities(
@@ -181,24 +214,53 @@ class VivintDevice(Entity):
 
     @property
     def serial_number(self) -> str | None:
-        """Return the serial number for this device."""
-        serial_number = self.data.get(Attribute.SERIAL_NUMBER_32_BIT)
-        if not serial_number:
-            serial_number = self.data.get(Attribute.SERIAL_NUMBER)
-        return serial_number
+        """Return the serial number for this device as a string.
+
+        The raw value can be an `int` or `str`, depending on the device.  We
+        normalise to `str` (or `None`) so that Pydantic validation in the
+        public API never fails because of a type mismatch.
+        """
+        serial = (
+            self.data.get(Attribute.SERIAL_NUMBER_32_BIT)
+            or self.data.get(Attribute.SERIAL_NUMBER)
+        )
+        return str(serial) if serial not in (None, "") else None
 
     @property
     def software_version(self) -> str | None:
-        """Return the software version of this device, if any."""
-        # current software version
-        if (csv := self.data.get(Attribute.CURRENT_SOFTWARE_VERSION)) is not None:
+        """Return the software or firmware version as a string.
+
+        Vivint devices report version information in several different
+        formats (e.g., an int, a list of ints, or a list of lists).  This
+        accessor converts all of those representations into a human-friendly
+        dotted string (e.g., ``"3.1.0"``) so that the FastAPI
+        ``DeviceResponse`` model always receives a `str | None` value.
+        """
+        csv = self.data.get(Attribute.CURRENT_SOFTWARE_VERSION)
+        if csv not in (None, ""):
             return str(csv)
-        # firmware version
-        return (
-            ".".join([str(i) for s in fwv for i in s])
-            if (fwv := self.data.get(Attribute.FIRMWARE_VERSION)) is not None
-            else None
-        )
+
+        fwv = self.data.get(Attribute.FIRMWARE_VERSION)
+        if fwv in (None, ""):
+            return None
+
+        # If it's already an int (e.g., 15) just convert directly.
+        if isinstance(fwv, int):
+            return str(fwv)
+
+        # If we get a flat list of ints (e.g., [3, 1, 0]) join them.
+        if isinstance(fwv, (list, tuple)) and all(isinstance(p, int) for p in fwv):
+            return ".".join(str(p) for p in fwv)
+
+        # If we get a list of lists (e.g., [[3], [1], [0]]) flatten first.
+        if isinstance(fwv, (list, tuple)) and all(
+            isinstance(p, (list, tuple)) for p in fwv
+        ):
+            flattened: list[int] = [item for sub in fwv for item in sub]
+            return ".".join(str(p) for p in flattened)
+
+        # Fallback – ensure we always return a string.
+        return str(fwv)
 
     def get_zwave_details(self) -> None:
         """Get Z-Wave details."""
