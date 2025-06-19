@@ -261,7 +261,7 @@ async def set_thermostat_mode(
 # Camera Actions
 @router.post("/{device_id}/camera/request-snapshot", response_model=CameraResponse)
 async def request_camera_snapshot(
-    system_and_device: tuple[System, Device] = Depends(get_system_and_device)
+    system_and_device: tuple[System, Device] = Depends(get_system_and_device),
 ):
     """
     Request a new snapshot from a camera. 
@@ -271,11 +271,12 @@ async def request_camera_snapshot(
     if not isinstance(device, Camera):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device is not a Camera.")
     
-    if not hasattr(device, 'request_snapshot_update') or not callable(getattr(device, 'request_snapshot_update')):
-        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Snapshot request functionality not available for this camera.")
-        
+    # Use unified request_thumbnail helper provided by vivintpy
+    if not hasattr(device, 'request_thumbnail'):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Snapshot request not supported for this camera.")
+
     try:
-        await device.request_snapshot_update()
+        await device.request_thumbnail()
         # The device object itself is updated by vivintpy, so returning it reflects its current state.
         # The actual snapshot URL update might be asynchronous.
         return device
@@ -300,21 +301,33 @@ async def get_camera_snapshot(
     if not isinstance(device, Camera):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device is not a Camera.")
 
+    # Always attempt to obtain a thumbnail URL, optionally triggering a refresh first
+    attempts_left = 12  # up to ~6 seconds
+    url: str | None = None
+
     if refresh:
         try:
             await device.request_thumbnail()
         except VivintSkyApiError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to request new snapshot: {exc}") from exc
 
-    # Get latest thumbnail URL
+    # Initial fetch
     url = await device.get_thumbnail_url()
-    if not url:
+
+    while url is None and attempts_left > 0:
+        await asyncio.sleep(0.5)
+        url = await device.get_thumbnail_url()
+        attempts_left -= 1
+
+    if url is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot URL unavailable.")
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return StreamingResponse(resp.aiter_bytes(), media_type="image/jpeg")
+            # Disable downstream caching so browsers always fetch fresh images
+            headers = {"Cache-Control": "no-store"}
+            return StreamingResponse(resp.aiter_bytes(), media_type="image/jpeg", headers=headers)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to fetch snapshot: {exc}") from exc

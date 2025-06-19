@@ -16,7 +16,12 @@ class DeviceResponse(BaseModel):
 
     id: int = Field(..., description="Device ID")
     name: str = Field(..., description="Device name")
-    device_type: DeviceType = Field(..., alias="type", description="Type of the device")
+    device_type: DeviceType = Field(
+        ..., 
+        validation_alias="device_type",
+        serialization_alias="type",
+        description="Type of the device",
+    )
     manufacturer: str | None = Field(None, description="Device manufacturer")
     model: str | None = Field(None, description="Device model")
     serial_number: str | None = Field(None, description="Device serial number")

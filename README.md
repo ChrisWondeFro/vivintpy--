@@ -168,6 +168,49 @@ A new JSON payload with `access_token` (and optionally a new `refresh_token`) wi
 | GET    | `/systems/{system_id}/devices/{device_id}/snapshot` | Fetch latest camera snapshot (JPEG; add `?refresh=true` to request new) |
 | WebSocket | `/ws/events` | Real-time event stream for all systems & devices |
 
+### WebSocket Events
+
+`/ws/events` provides a real-time stream of device and system events.
+
+• **Heartbeat** – when no events have been sent for `30 s` the server sends
+  a ping message to keep the connection alive:
+
+```json
+{"event_name": "ping"}
+```
+
+Clients MAY simply ignore this message or use it to measure latency.
+
+• **Envelope format** – all other messages are JSON objects:
+
+```json
+{
+  "event_name": "<vivint_event_type>",
+  "system_id": 3238653088951452,
+  "device_id": 42,
+  "timestamp": 1718635987431,
+  "data": { /* raw vivintpy event payload */ }
+}
+```
+
+`event_name` is the Vivint event (e.g. `door_opened`, `lock_state_changed`).
+
+• **Filtering** – reduce traffic by adding query parameters:
+
+```
+/ws/events?system_id=3238653088951452           # events for one system
+/ws/events?device_id=27                        # events for one device (any system)
+/ws/events?system_id=...&device_id=27          # device 27 on that system only
+```
+
+• **Back-pressure** – each connection has an internal queue of **1 000**
+  messages. If the client falls behind and the queue fills up, the server
+  closes the socket with close code **1011** (*internal error – slow consumer*).
+
+• **Authentication** – the WebSocket handshake must include the normal
+  `Authorization: Bearer <access_token>` header.
+
+
 > **Note**
 > All routes except the `/auth/*` series require a valid **Bearer** `access_token` in the `Authorization` header.
 
