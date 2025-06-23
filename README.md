@@ -30,7 +30,7 @@ Account (high-level API)
 - `account.py`: User/session management, system/device discovery, PubNub connection.
 - `api.py`: Handles authentication, REST/gRPC calls, token refresh, error handling.
 - `devices/`: Device type wrappers (Camera, Lock, Switch, etc.)
-- `pubnub.py`: Real-time event subscription and dispatch.
+- `stream.py`: Real-time event subscription and dispatch.
 
 See `demo.py` for a working example.
 
@@ -220,6 +220,28 @@ Clients MAY simply ignore this message or use it to measure latency.
 curl -H "Authorization: Bearer $ACCESS_TOKEN" \
      http://127.0.0.1:8000/systems/123456/devices
 ```
+
+---
+
+## Doorbell Media Capture
+
+The backend automatically captures a fresh **snapshot** (JPEG) – and, when
+available, the associated **audio clip** – whenever your Vivint doorbell camera
+reports a **motion** or **person** event.
+
+• **Storage path** – files are written to
+`MEDIA_ROOT/{system_id}/{device_id}/{timestamp}.jpg` (plus `.m4a` for audio).
+  Set the `MEDIA_ROOT` environment variable to override the default `media`
+  directory.
+
+• **Real-time notification** – once the files are safely written the helper
+  emits a `capture_saved` event on the originating `Camera` instance.  You can
+  subscribe to this event (e.g. in the WebSocket router) to notify frontend
+  clients or trigger further processing.
+
+No additional configuration is required; the capture manager starts
+automatically during FastAPI app startup as long as authentication succeeds and
+an active PubNub stream is running.
 
 ---
 

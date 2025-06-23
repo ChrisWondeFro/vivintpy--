@@ -2,11 +2,11 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status
-from fastapi.encoders import jsonable_encoder
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from .. import deps
 from vivintpy import Account
+from vivintpy.event_bus import subscribe as bus_subscribe, unsubscribe as bus_unsubscribe
 # from vivintpy.devices import Device # For more specific type hinting if needed for event_data
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,29 @@ async def websocket_events_endpoint(websocket: WebSocket):
         return
     await websocket.accept()
     logger.info("WebSocket connection accepted for user: %s", current_user.username)
+
+    # Subscribe to global event bus for capture_saved notifications
+    bus_queue = bus_subscribe("capture_saved")
+    bus_task: asyncio.Task | None = None
+
+    async def _bus_listener() -> None:  # noqa: D401
+        while True:
+            payload = await bus_queue.get()
+            # Optional filtering by system/device as query params
+            if system_id_filter and payload.get("system_id") != system_id_filter:
+                continue
+            if device_id_filter and payload.get("device_id") != device_id_filter:
+                continue
+            try:
+                event_queue.put_nowait({
+                    "event_name": "capture_saved",
+                    **payload,
+                })
+            except asyncio.QueueFull:
+                logger.warning("WebSocket queue full for capture_saved event; closing.")
+                await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Client too slow to consume events.")
+                break
+    bus_task = asyncio.create_task(_bus_listener())
 
     # Optional per-client filtering based on query parameters
     query_params = websocket.query_params
@@ -158,6 +181,12 @@ async def websocket_events_endpoint(websocket: WebSocket):
             except RuntimeError: # Handle cases where websocket is already closing
                 pass
     finally:
+        # Cancel bus listener and unsubscribe
+        if bus_task:
+            bus_task.cancel()
+            await asyncio.gather(bus_task, return_exceptions=True)
+            await bus_unsubscribe("capture_saved", bus_queue)
+
         # Unregister the event handler from the Vivint EventStream
         if stream:
             try:

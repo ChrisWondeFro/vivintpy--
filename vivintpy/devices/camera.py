@@ -153,6 +153,19 @@ class Camera(VivintDevice):
             self.alarm_panel.id, self.alarm_panel.partition_id, self.id
         )
 
+    # ------------------------------------------------------------------
+    # Alias: request_snapshot
+    # ------------------------------------------------------------------
+
+    async def request_snapshot(self) -> None:  # pragma: no cover – thin alias
+        """Request a fresh snapshot from the camera.
+
+        This is an alias for :py:meth:`request_thumbnail` kept for backward
+        compatibility with code paths and documentation that still refer to
+        *snapshot* instead of *thumbnail*.
+        """
+        await self.request_thumbnail()
+
     async def get_thumbnail_url(self) -> str | None:
         """Return the latest camera thumbnail URL."""
         # Sometimes this date field comes back with a "Z" at the end
@@ -228,6 +241,32 @@ class Camera(VivintDevice):
             )
             return
         await self.api.set_camera_privacy_mode(self.alarm_panel.id, self.id, state)
+
+    async def speak(self, audio: bytes, mime_type: str | None = None) -> None:
+        """Play an audio clip through the camera speaker.
+
+        Parameters
+        ----------
+        audio: bytes
+            Raw audio payload (e.g. WAV/MP3). The clip should be short (\<= 10 s)
+            to avoid request-size limits imposed by Vivint.
+        mime_type: str | None, optional
+            Content-Type to send. Defaults to ``audio/wav`` which is accepted by
+            all Vivint camera models tested. Set this if you provide MP3 (e.g.
+            ``audio/mpeg``).
+
+        Raises
+        ------
+        VivintSkyApiError
+            If the underlying HTTP call fails for any reason.
+        """
+        await self.api.upload_camera_audio(
+            self.alarm_panel.id,
+            self.alarm_panel.partition_id,
+            self.id,
+            audio,
+            mime_type=mime_type,
+        )
 
     async def set_deter_mode(self, state: bool) -> None:
         """Set deter mode."""

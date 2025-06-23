@@ -300,16 +300,20 @@ class BypassTamperDevice(VivintDevice):
 
     @property
     def is_bypassed(self) -> bool:
-        """Return True if the device is bypassed."""
-        return (
-            int(self.data.get(Attribute.BYPASSED, ZoneBypass.UNBYPASSED))
-            != ZoneBypass.UNBYPASSED
-        )
+        """Return True if the device is bypassed (handles missing fields safely)."""
+        val = self.data.get(Attribute.BYPASSED)
+        if val is None:
+            return False
+        try:
+            return int(val) != ZoneBypass.UNBYPASSED
+        except (TypeError, ValueError):
+            # Fallback: treat unparsable value as not bypassed
+            return False
 
     @property
     def is_tampered(self) -> bool:
         """Return True if the device is reporting as tampered."""
-        return cast(bool, self.data.get(Attribute.TAMPER, False))
+        return bool(self.data.get(Attribute.TAMPER))
 
 
 class UnknownDevice(VivintDevice):

@@ -14,7 +14,7 @@ import aiohttp
 import certifi
 import grpc
 import jwt
-from aiohttp import ClientResponseError
+from aiohttp import ClientResponseError, ClientConnectorCertificateError
 from aiohttp.client import _RequestContextManager
 from google.protobuf.message import Message
 
@@ -111,9 +111,12 @@ class VivintSkyApi:
     async def connect(self) -> AuthUserData:
         """Connect to VivintSky Cloud Service."""
         if not (self.__has_custom_client_session and self.is_session_valid()):
-            # Attempt to use refresh_token first
-            if self.__refresh_token:
-                await self.refresh_token(self.__refresh_token)
+            # Attempt to use refresh_token first – prefer the newest token we already hold
+            refresh_token_val = self.tokens.get("refresh_token") or self.__refresh_token
+            if refresh_token_val:
+                await self.refresh_token(refresh_token_val)
+                # Update internal copy so subsequent attempts reuse it without needing tokens dict
+                self.__refresh_token = refresh_token_val
             elif self.__password:
                 await self.__get_vivintsky_session(self.__username, self.__password)
             else:
@@ -469,6 +472,168 @@ class VivintSkyApi:
             )
             raise VivintSkyApiError("Failed to set thermostat state")
 
+    async def upload_camera_audio(
+        self, panel_id: int, partition_id: int, device_id: int, audio: bytes, mime_type: str | None = None
+    ) -> None:
+        """Upload an audio clip to *device_id*.
+
+        The Vivint platform now streams audio clips through a *relay URL* that is
+        advertised in the camera payload under the compact keys ``cea`` (cloud /
+        external access) or ``cia`` (local / internal access).  This method first
+        tries to PUT the clip directly to that relay URL via :py:meth:`_raw_put` so
+        that the sound starts playing immediately.  If the relay URL cannot be
+        determined *or* the request fails, we gracefully fall back to the legacy
+        REST path ``/{panel_id}/{partition_id}/cameras/{device_id}/audio``.
+        """
+
+        # ------------------------------------------------------------------
+        # Attempt direct relay upload
+        # ------------------------------------------------------------------
+        headers: dict[str, str] = {"Content-Type": mime_type or "audio/wav"}
+        relay_url: str | None = None
+        dest_host: str | None = None
+        dest_port: str | None = None
+
+        try:
+            # ``get_device_data`` returns a *SystemData* Pydantic model whose raw
+            # dict still contains the unparsed camera keys we are interested in.
+            device_payload = await self.get_device_data(panel_id, device_id)
+            raw = device_payload.model_dump(by_alias=True)
+
+            # The device may be returned as the top-level payload (device endpoint)
+            # *or* nested in ``system.devices`` (system endpoint) depending on the
+            # route that Vivint serves.  Handle both.
+            candidate = raw
+            if "system" in raw and raw["system"].get("devices"):
+                for dev in raw["system"]["devices"]:  # type: ignore[index]
+                    if dev.get("_id") == device_id or dev.get("id") == device_id:
+                        candidate = dev
+                        break
+
+            # Extract relay URL and LAN addressing used for the destination headers
+            relay_url = candidate.get("cea") or candidate.get("cia")
+            if isinstance(relay_url, list):
+                relay_url = relay_url[0] if relay_url else None
+
+            dest_host = candidate.get("caip") or candidate.get("camera_ip_address")
+            dest_port = candidate.get("cap") or candidate.get("camera_ip_port")
+            # ------------------------------------------------------------------
+            # If we couldn't find a relay URL from the single-device endpoint,
+            # inspect the *system* payload which often contains richer data.
+            # ------------------------------------------------------------------
+            if not relay_url:
+                try:
+                    sys_raw = (await self.get_system_data(panel_id)).model_dump(by_alias=True)
+                    devices: list[dict] | None = None
+                    if sys_raw.get("devices"):
+                        devices = sys_raw["devices"]  # type: ignore[assignment]
+                    elif sys_raw.get("system") and sys_raw["system"].get("devices"):
+                        devices = sys_raw["system"]["devices"]  # type: ignore[assignment]
+                    if devices:
+                        for dev in devices:
+                            if dev.get("_id") == device_id or dev.get("id") == device_id:
+                                relay_url = dev.get("cea") or dev.get("cia")
+                                if isinstance(relay_url, list):
+                                    relay_url = relay_url[0] if relay_url else None
+                                dest_host = dev.get("caip") or dev.get("camera_ip_address")
+                                dest_port = dev.get("cap") or dev.get("camera_ip_port")
+                                if not headers.get("X-Destination-Host") and dev.get("ceah"):
+                                    ceah = dev.get("ceah")
+                                    if isinstance(ceah, dict):
+                                        headers.update({k: str(v) for k, v in ceah.items()})
+                                break
+                except Exception as exc:  # pragma: no cover – best-effort discovery
+                    _LOGGER.debug("Unable to determine relay URL from system data for camera %s: %s", device_id, exc)
+
+            # ------------------------------------------------------------------
+            # Ultimate fallback – recursive search through raw payload for cea/cia
+            # ------------------------------------------------------------------
+            if not relay_url:
+                stack: list[Any] = [raw]
+                while stack:
+                    obj = stack.pop()
+                    if isinstance(obj, dict):
+                        if ("cea" in obj or "cia" in obj) and (
+                            obj.get("_id") == device_id or obj.get("id") == device_id or not obj.get("_id")
+                        ):  # accept match even without id if we are desperate
+                            relay_url = obj.get("cea") or obj.get("cia")
+                            if isinstance(relay_url, list):
+                                relay_url = relay_url[0] if relay_url else None
+                            # copy ceah headers if present
+                            ceah = obj.get("ceah")
+                            if isinstance(ceah, dict):
+                                headers.update({k: str(v) for k, v in ceah.items()})
+                                if (
+                                    "X-Destination-Host" in ceah
+                                    and ":" in str(ceah["X-Destination-Host"])
+                                ):
+                                    host_part, port_part = str(ceah["X-Destination-Host"]).split(":", 1)
+                                    dest_host = host_part
+                                    dest_port = port_part
+                            if not dest_host:
+                                dest_host = obj.get("caip") or obj.get("camera_ip_address")
+                            if not dest_port:
+                                dest_port = obj.get("cap") or obj.get("camera_ip_port")
+                            break
+                        else:
+                            stack.extend(obj.values())
+                    elif isinstance(obj, list):
+                        stack.extend(obj)
+        except Exception as exc:  # pragma: no cover – best-effort discovery
+            _LOGGER.debug("Unable to determine relay URL for camera %s: %s", device_id, exc)
+
+        if relay_url:
+            if dest_host:
+                headers["X-Destination-Host"] = str(dest_host)
+            if dest_port:
+                headers["X-Destination-Port"] = str(dest_port)
+
+            # Local relay endpoints present self-signed certificates; disable TLS
+            # verification unless we are talking to the cloud proxy.
+            verify_ssl = relay_url.startswith("https://audio.vivintsky.com")
+
+            try:
+                await self._raw_put(
+                    relay_url,
+                    headers=headers,
+                    data=audio,
+                    verify_ssl=verify_ssl,
+                )
+                return  # Success – nothing more to do.
+            except VivintSkyApiError as exc:
+                _LOGGER.warning(
+                    "Direct relay upload failed for camera %s (url=%s): %s – falling back to REST endpoint",
+                    device_id,
+                    relay_url,
+                    exc,
+                )
+
+        # ------------------------------------------------------------------
+        # Fallback to legacy REST endpoint
+        # ------------------------------------------------------------------
+        try:
+            resp = await self.__put(
+                f"{panel_id}/{partition_id}/cameras/{device_id}/audio",
+                headers=headers,
+                data=audio,
+            )
+        except ClientResponseError as exc:
+            _LOGGER.error(
+                "Legacy camera audio upload failed for camera %s: HTTP %s %s",
+                device_id,
+                exc.status,
+                exc.message,
+            )
+            raise VivintSkyApiError("Legacy audio upload failed") from exc
+        if resp is None:
+            _LOGGER.error(
+                "Failed to upload audio to camera %s @ %s:%s via legacy endpoint",
+                device_id,
+                panel_id,
+                partition_id,
+            )
+            raise VivintSkyApiError("Failed to upload audio clip to camera")
+
     async def request_camera_thumbnail(
         self, panel_id: int, partition_id: int, device_id: int
     ) -> None:
@@ -628,10 +793,173 @@ class VivintSkyApi:
     async def __put(
         self, path: str, headers: dict | None = None, data: Any | None = None
     ) -> dict | None:
-        """Perform a put request."""
+        """Perform a put request using the Vivint REST API base path."""
         return await self.__call(
             self.__client_session.put, path, headers=headers, data=data
         )
+
+    # ---------------------------------------------------------------------
+    # Low-level helper for uploading raw payloads to Vivint relay / camera
+    # endpoints that are *outside* the main Vivint REST API base URL.  This
+    # is required for features such as direct audio upload to cameras which
+    # use relay hosts like ``https://audio.vivintsky.com/Audio-<id>``.
+    # ---------------------------------------------------------------------
+    async def _raw_put(
+        self,
+        url: str,
+        *,
+        headers: dict | None = None,
+        data: Any | None = None,
+        verify_ssl: bool = True,
+    ) -> dict | None:
+        """Perform a raw HTTP PUT to *url*.
+
+        Parameters
+        ----------
+        url: str
+            Fully-qualified URL (e.g. ``https://audio.vivintsky.com/Audio-27``).
+        headers: dict | None
+            Optional additional headers.
+        data: Any | None
+            Request body to send.
+        verify_ssl: bool, default *True*
+            If *False*, disables TLS verification (required when talking to
+            LAN cameras that present self-signed certs).
+
+        Returns the JSON body if the response contains JSON, otherwise an
+        empty ``dict`` for 2xx responses.  Raises :class:`VivintSkyApiError`
+        for non-successful status codes.
+        """
+        if not self.is_session_valid():
+            # Ensure we have a valid session so that the required cookies are
+            # present in the ClientSession cookie jar.
+            await self.connect()
+
+        # Merge caller-supplied headers with the Vivint session cookie.  The
+        # relay service requires at least the ``v_sid`` cookie to authorise
+        # requests.  We include *all* cookies that match the request domain
+        # so that CSRF tokens etc. are also sent when needed.
+        if headers is None:
+            headers = {}
+
+        if "Cookie" not in headers:
+            cookie_header_parts: list[str] = []
+            for cookie in self.__client_session.cookie_jar:
+                # Send only cookies that belong to the same parent domain so
+                # we don’t accidentally leak them elsewhere.
+                if cookie["domain"].endswith("vivintsky.com"):
+                    cookie_header_parts.append(f"{cookie.key}={cookie.value}")
+            if cookie_header_parts:
+                headers["Cookie"] = "; ".join(cookie_header_parts)
+
+        # aiohttp allows *ssl* kwarg to be either a bool or SSLContext.
+        ssl_kwarg = verify_ssl
+
+        try:
+            resp = await self.__client_session.put(
+                url,
+                headers=headers,
+                data=data,
+                ssl=ssl_kwarg,
+            )
+        except ClientConnectorCertificateError as exc:
+            # Retry once without SSL verification to cope with expired/self-signed certs
+            if verify_ssl:
+                _LOGGER.warning(
+                    "SSL verification failed for %s (%s); retrying with verify_ssl=False", url, exc
+                )
+                return await self._raw_put(
+                    url,
+                    headers=headers,
+                    data=data,
+                    verify_ssl=False,
+                )
+            raise
+
+        async with resp:
+            try:
+                body = await resp.json(encoding="utf-8") if resp.content_type == "application/json" else {}
+            except aiohttp.ContentTypeError:
+                body = {}
+
+            _LOGGER.debug(
+                "Vivint RAW PUT: url=%s headers=%s status=%s body=%s",
+                url,
+                headers,
+                resp.status,
+                body,
+            )
+            print(
+                f"Vivint RAW PUT: url={url} status={resp.status} body={body}",
+                flush=True,
+            )
+
+            if 200 <= resp.status < 300:
+                return body
+
+            raise VivintSkyApiError(f"Raw PUT failed: HTTP {resp.status} – {body}")
+
+    async def _raw_get(
+        self,
+        url: str,
+        *,
+        headers: dict | None = None,
+        verify_ssl: bool = True,
+    ) -> bytes:
+        """Fetch *url* and return raw bytes with optional SSL-fallback.
+
+        Mirrors :py:meth:`_raw_put` but for HTTP **GET**.  A handful of Vivint
+        signed URLs—especially LAN camera endpoints—occasionally present
+        expired or self-signed certificates.  We try once with normal TLS
+        verification and automatically retry without verification on
+        ``ClientConnectorCertificateError`` just like `_raw_put`.
+        """
+        if not self.is_session_valid():
+            await self.connect()
+
+        if headers is None:
+            headers = {}
+
+        # propagate session cookies (v_sid etc.) when targeting vivintsky.com
+        if "Cookie" not in headers:
+            cookie_header_parts: list[str] = []
+            for cookie in self.__client_session.cookie_jar:
+                if cookie["domain"].endswith("vivintsky.com"):
+                    cookie_header_parts.append(f"{cookie.key}={cookie.value}")
+            if cookie_header_parts:
+                headers["Cookie"] = "; ".join(cookie_header_parts)
+
+        ssl_kwarg = verify_ssl
+        try:
+            resp = await self.__client_session.get(
+                url,
+                headers=headers,
+                ssl=ssl_kwarg,
+            )
+        except ClientConnectorCertificateError as exc:
+            if verify_ssl:
+                _LOGGER.warning(
+                    "SSL verification failed for %s (%s); retrying with verify_ssl=False", url, exc
+                )
+                return await self._raw_get(
+                    url,
+                    headers=headers,
+                    verify_ssl=False,
+                )
+            raise
+
+        async with resp:
+            body_bytes = await resp.read()
+            _LOGGER.debug(
+                "Vivint RAW GET: url=%s headers=%s status=%s bytes=%s",
+                url,
+                headers,
+                resp.status,
+                len(body_bytes),
+            )
+            if 200 <= resp.status < 300:
+                return body_bytes
+            raise VivintSkyApiError(f"Raw GET failed: HTTP {resp.status}")
 
     async def __call(
         self,
@@ -649,7 +977,8 @@ class VivintSkyApi:
         if self.__client_session.closed:
             raise VivintSkyApiError("The client session has been closed")
 
-        is_mfa_request = data and "code" in data
+        # Only treat request as MFA-related if payload is a mapping containing a "code" field
+        is_mfa_request = isinstance(data, dict) and "code" in data
 
         if self.__mfa_pending and not is_mfa_request:
             raise VivintSkyApiMfaRequiredError(AuthenticationResponse.MFA_REQUIRED)
@@ -659,10 +988,15 @@ class VivintSkyApi:
                 headers = {}
             headers["Authorization"] = f"Bearer {self.__token['access_token']}"
 
-        resp = await method(
+        # Build the full request URL so we can log it later
+        url = (
             path
             if is_mfa_request or AUTH_ENDPOINT in path
-            else f"{API_ENDPOINT}/{path}",
+            else f"{API_ENDPOINT}/{path}"
+        )
+
+        resp = await method(
+            url,
             headers=headers,
             params=params,
             data=data,
@@ -673,11 +1007,29 @@ class VivintSkyApi:
                 resp_data = {AuthenticationResponse.MESSAGE: await resp.text()}
             else:
                 resp_data = await resp.json(encoding="utf-8")
-            if resp.status == 200:
-                return resp_data
-            if resp.status == 302:
-                return {"location": resp.headers.get("Location")}
-            if resp.status in (400, 401, 403):
+            # Detailed debug logging of every VivintSky API call – useful when diagnosing
+            # undocumented endpoints such as the camera audio upload.  Log at DEBUG level
+            # so that users can enable it selectively without spamming normal logs.
+            _LOGGER.debug(
+                "VivintSky API call: url=%s headers=%s status=%s body=%s",
+                url,
+                headers,
+                resp.status,
+                resp_data,
+            )
+            # Echo to stdout so that the information is visible even when the Python
+            # logging configuration doesn’t send DEBUG logs to the console.
+            print(
+                f"VivintSky API call: url={url} status={resp.status} body={resp_data}",
+                flush=True,
+            )
+
+
+        if resp.status == 200:
+            return resp_data
+        if resp.status == 302:
+            return {"location": resp.headers.get("Location")}
+        if resp.status in (400, 401, 403):
                 message = (
                     resp_data.get(MfaVerificationResponse.MESSAGE)
                     if is_mfa_request
@@ -694,8 +1046,8 @@ class VivintSkyApi:
                 if AUTH_ENDPOINT in path:
                     cls = VivintSkyApiAuthenticationError
                 raise cls(message)
-            resp.raise_for_status()
-            return None
+        resp.raise_for_status()
+        return None
 
     async def _send_grpc(
         self,

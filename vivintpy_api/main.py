@@ -5,6 +5,7 @@ import logging
 
 from vivintpy import Account, VivintSkyApiMfaRequiredError # VivintSkyApiAuthenticationError
 from vivintpy_api.config import settings
+from vivintpy.event_capture import DoorbellCaptureManager
 from vivintpy_api.routers import auth, systems, devices, events # Import other routers as they are ready
 
 # Configure logging
@@ -15,7 +16,8 @@ logging.basicConfig(level=logging.INFO) # Or use settings.LOG_LEVEL
 async def lifespan(app: FastAPI):
     # Startup: Initialize shared Vivint Account and PubNub client
     logger.info("FastAPI app startup: Initializing resources...")
-    app.state.vivint_account = None # Initialize with None
+    app.state.vivint_account = None  # Initialize with None
+    app.state.doorbell_capture = None
 
     if settings.VIVINT_USERNAME and settings.VIVINT_PASSWORD:
         logger.info(f"Attempting to initialize shared Vivint Account for user: {settings.VIVINT_USERNAME}")
@@ -39,6 +41,10 @@ async def lifespan(app: FastAPI):
                 logger.info("PubNub event stream connected for shared account.")
             
             app.state.vivint_account = shared_account
+            # Start doorbell media capture
+            capture_mgr = DoorbellCaptureManager(shared_account, settings.MEDIA_ROOT)
+            await capture_mgr.start()
+            app.state.doorbell_capture = capture_mgr
         except VivintSkyApiMfaRequiredError:
             logger.error(
                 "MFA required for the shared Vivint Account configured in settings. "
@@ -57,6 +63,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: Cleanup resources
     logger.info("FastAPI app shutdown: Cleaning up resources...")
+    # Stop doorbell capture first
+    if app.state.doorbell_capture:
+        await app.state.doorbell_capture.stop()
+
     if app.state.vivint_account:
         shared_account: Account = app.state.vivint_account
         logger.info("Disconnecting shared Vivint Account and PubNub stream...")

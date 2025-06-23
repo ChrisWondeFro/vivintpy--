@@ -92,8 +92,29 @@ class Thermostat(VivintDevice):
         return round(celsius * 1.8 + 32)
 
     async def set_state(self, **kwargs: Any) -> None:
-        """Set the state of the thermostat."""
+        """Set arbitrary state parameters on the thermostat via VivintSkyApi."""
         assert self.alarm_panel
         await self.api.set_thermostat_state(
             self.alarm_panel.id, self.alarm_panel.partition_id, self.id, **kwargs
         )
+
+    # ------------------------------------------------------------------
+    # Convenience helpers used by FastAPI router
+    # ------------------------------------------------------------------
+    async def set_cool_setpoint(self, setpoint: float) -> None:
+        """Set the cool set-point (°F)."""
+        await self.set_state(cool_set_point=setpoint)
+
+    async def set_heat_setpoint(self, setpoint: float) -> None:
+        """Set the heat set-point (°F)."""
+        await self.set_state(heat_set_point=setpoint)
+
+    async def set_fan_mode(self, mode: FanMode | int) -> None:
+        """Set thermostat fan mode."""
+        mode_val = mode.value if isinstance(mode, FanMode) else mode
+        await self.set_state(fan_mode=mode_val)
+
+    async def set_mode(self, mode: OperatingMode | int) -> None:
+        """Set thermostat operating mode (COOL/HEAT/AUTO/OFF)."""
+        mode_val = mode.value if isinstance(mode, OperatingMode) else mode
+        await self.set_state(operating_mode=mode_val)

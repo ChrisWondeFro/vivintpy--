@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File, BackgroundTasks, Query
+from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 import httpx
 from typing import List, Union, Any
@@ -156,7 +157,8 @@ async def set_door_lock_state(
     if not isinstance(device, DoorLock):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device is not a DoorLock.")
     try:
-        await device.set_locked(payload.locked)
+        # DoorLock class exposes set_state(True|False) wrapper
+        await device.set_state(payload.locked)
         return device
     except VivintSkyApiError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to set lock state: {e}")
@@ -259,6 +261,57 @@ async def set_thermostat_mode(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to set thermostat mode: {e}")
 
 # Camera Actions
+
+@router.post("/{device_id}/speak", responses={
+    200: {"model": CameraResponse, "description": "Audio played successfully"},
+    202: {"description": "Audio queued for background playback"},
+})
+async def speak_to_camera(
+    background_tasks: BackgroundTasks,
+    system_and_device: tuple[System, Device] = Depends(get_system_and_device),
+    background: bool = Query(False, description="If true, audio will be queued and endpoint returns immediately."),
+    file: UploadFile = File(..., description="Audio file to play (WAV/MP3)."),
+):
+    """Play an uploaded audio clip through the camera speaker.
+
+    The endpoint accepts any audio MIME type supported by the camera (tested with
+    ``audio/wav`` and ``audio/mpeg``). If the *background* flag is set, the
+    audio is queued via FastAPI's background task mechanism and the endpoint
+    responds with HTTP *202 Accepted* immediately. Otherwise, the call is
+    executed synchronously and returns the updated `Camera` representation on
+    success.
+    """
+    _, device = system_and_device
+    if not isinstance(device, Camera):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device is not a Camera.")
+
+    # ------------------------------------------------------------------
+    # Validate uploaded file and read bytes
+    # ------------------------------------------------------------------
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty or could not be read.",
+        )
+
+    try:
+        # Determine MIME type (fallback to audio/wav if not supplied by client)
+        mime_type = file.content_type or "audio/wav"
+
+        if background:
+            background_tasks.add_task(device.speak, audio_bytes, mime_type)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={"detail": "Audio queued for background playback"},
+            )
+        # Synchronous execution – call speak and return updated device state
+        await device.speak(audio_bytes, mime_type)
+        return device
+    except VivintSkyApiError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to play audio: {e}")
+
+        
 @router.post("/{device_id}/camera/request-snapshot", response_model=CameraResponse)
 async def request_camera_snapshot(
     system_and_device: tuple[System, Device] = Depends(get_system_and_device),

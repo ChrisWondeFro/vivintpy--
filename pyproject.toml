@@ -21,6 +21,7 @@ pydantic = "^2.11.5"
 fastapi = "^0.110.0"
 email-validator = "^2.2.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
+aiofiles = "^24.1.0"
 python-multipart = "^0.0.20"
 pydantic-settings = "^2.0.0"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
